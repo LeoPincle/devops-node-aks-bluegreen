@@ -1,0 +1,157 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: infra-vars
+
+stages:
+# 1) Build & push image to ACR
+- stage: Build
+  displayName: Build & Push
+  jobs:
+  - job: build
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '20.x'
+      displayName: 'Use Node.js 20'
+
+    - script: |
+        cd app
+        npm ci
+        npm test
+      displayName: 'Install deps & test'
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Init/Apply (infra)'
+      inputs:
+        azureSubscription: 'azure-sub-conn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+          cd terraform
+          terraform init -input=false
+          terraform apply -auto-approve -input=false \
+            -var="resource_group_name=$(resource_group_name)" \
+            -var="location=$(location)" \
+            -var="acr_name=$(acr_name)" \
+            -var="aks_name=$(aks_name)"
+
+    - task: AzureCLI@2
+      displayName: 'ACR: Login & Build/Push image'
+      inputs:
+        azureSubscription: 'azure-sub-conn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+          ACR_LOGIN_SERVER=$(az acr show -n $(acr_name) -g $(resource_group_name) --query loginServer -o tsv)
+
+          IMAGE="$ACR_LOGIN_SERVER/hello-bluegreen:$(Build.BuildId)"
+          echo "Building $IMAGE"
+          az acr build --registry $(acr_name) --image "hello-bluegreen:$(Build.BuildId)" .
+
+          echo "##vso[task.setvariable variable=ACR_LOGIN_SERVER;isOutput=true]$ACR_LOGIN_SERVER"
+          echo "##vso[task.setvariable variable=IMAGE_TAG;isOutput=true]$(Build.BuildId)"
+      name: acrvars
+
+# 2) Deploy to AKS with blue/green
+- stage: Deploy
+  displayName: Blue/Green Deploy
+  dependsOn: Build
+  variables:
+    ACR_LOGIN_SERVER: $[ stageDependencies.Build.build.outputs['build.acrvars.ACR_LOGIN_SERVER'] ]
+    IMAGE_TAG:        $[ stageDependencies.Build.build.outputs['build.acrvars.IMAGE_TAG'] ]
+  jobs:
+  - job: deploy
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+    - task: AzureCLI@2
+      displayName: 'Get AKS credentials'
+      inputs:
+        azureSubscription: 'azure-sub-conn'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az aks get-credentials -n $(aks_name) -g $(resource_group_name) --overwrite-existing
+
+    - script: |
+        kubectl get ns | grep -q prod || kubectl create ns prod
+      displayName: 'Ensure prod namespace'
+
+    - script: |
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace prod --create-namespace \
+          --set controller.service.type=LoadBalancer
+      displayName: 'Install NGINX Ingress (prod)'
+
+    # Decide target color (flip/flop)
+    - script: |
+        set -e
+        ACTIVE=$(kubectl get ingress app-router -n prod -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.name}' 2>/dev/null || echo "none")
+        echo "Active service: $ACTIVE"
+        if [ "$ACTIVE" = "myapp-blue" ]; then
+          echo "##vso[task.setvariable variable=TARGET_COLOR]green"
+          echo "##vso[task.setvariable variable=IDLE_RELEASE]myapp-green"
+        else
+          # default to blue first time
+          echo "##vso[task.setvariable variable=TARGET_COLOR]blue"
+          echo "##vso[task.setvariable variable=IDLE_RELEASE]myapp-blue"
+        fi
+      displayName: 'Choose target color'
+
+    - script: |
+        set -e
+        echo "Deploying to color: $(TARGET_COLOR)"
+        helm upgrade --install $(IDLE_RELEASE) ./helm/app-chart \
+          --namespace prod \
+          --set image.repository=$(ACR_LOGIN_SERVER)/hello-bluegreen \
+          --set image.tag=$(IMAGE_TAG) \
+          --set env.color=$(TARGET_COLOR) \
+          --set env.version=v$(IMAGE_TAG) \
+          --wait --timeout 5m
+      displayName: 'Helm upgrade/install idle color'
+
+    - script: |
+        set -e
+        # Simple smoke test: hit the service through the cluster IP (via port-forward) or readiness check
+        kubectl rollout status deploy/$(IDLE_RELEASE) -n prod --timeout=120s
+      displayName: 'Smoke test idle color'
+
+    - script: |
+        set -e
+        # Get LB external IP for ingress host, use nip.io wildcard to avoid DNS setup
+        IP=""
+        for i in {1..30}; do
+          IP=$(kubectl get svc ingress-nginx-controller -n prod -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          [ -n "$IP" ] && break
+          echo "Waiting for LB IP..."
+          sleep 10
+        done
+        [ -z "$IP" ] && (echo "No LB IP" && exit 1)
+        HOST="${IP}.nip.io"
+        echo "Ingress host: $HOST"
+
+        helm upgrade --install router ./helm/router-chart \
+          --namespace prod \
+          --set ingress.host=$HOST \
+          --set ingress.activeService=$(IDLE_RELEASE) \
+          --wait --timeout 3m
+
+        echo "##vso[task.setvariable variable=PUBLIC_URL]http://$HOST/"
+      displayName: 'Flip router to new color'
+
+    - script: |
+        echo "App is live at: $(PUBLIC_URL)"
+      displayName: 'Show URL'
