@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app-chart.fullname" . }}
+  labels:
+    app: {{ include "app-chart.name" . }}
+    color: {{ .Values.env.color }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "app-chart.name" . }}
+      color: {{ .Values.env.color }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "app-chart.name" . }}
+        color: {{ .Values.env.color }}
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: COLOR
+              value: "{{ .Values.env.color }}"
+            - name: APP_VERSION
+              value: "{{ .Values.env.version }}"
+          ports:
+            - containerPort: {{ .Values.service.targetPort }}

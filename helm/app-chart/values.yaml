@@ -1,0 +1,17 @@
+replicaCount: 2
+
+image:
+  repository: <ACR_LOGIN_SERVER>/hello-bluegreen
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+env:
+  color: "blue"     # overridden per release
+  version: "v1"
+
+resources: {}

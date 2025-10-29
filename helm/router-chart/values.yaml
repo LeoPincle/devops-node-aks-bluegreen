@@ -1,0 +1,5 @@
+ingress:
+  host: <YOUR_DNS_OR_IP>.nip.io   # replace later
+  className: nginx
+  activeService: "myapp-blue"     # either myapp-blue or myapp-green
+  servicePort: 80
