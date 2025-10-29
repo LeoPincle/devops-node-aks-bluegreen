@@ -10,9 +10,9 @@ on:
 env:
   IMAGE_NAME: hello-bluegreen
   RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
-  LOCATION:            ${{ secrets.LOCATION }}
-  ACR_NAME:            ${{ secrets.ACR_NAME }}
-  AKS_NAME:            ${{ secrets.AKS_NAME }}
+  LOCATION: ${{ secrets.LOCATION }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  AKS_NAME: ${{ secrets.AKS_NAME }}
 
 jobs:
   build:
@@ -22,7 +22,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Log in to Azure
@@ -80,7 +80,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Log in to Azure
