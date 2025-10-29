@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      my_input:
+        description: 'Custom input'
+        required: false
+        default: 'default value'
 
 env:
   # These map to GitHub repository *Variables* (non-secret) you’ll set below
