@@ -1,0 +1,95 @@
+# ============================
+# Node.js
+# ============================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+.env
+.env.*
+
+# Build and runtime artifacts
+dist/
+build/
+coverage/
+*.log
+
+# ============================
+# Docker
+# ============================
+# Ignore Docker build context caches
+**/.dockerignore
+*.tar
+*.img
+
+# ============================
+# VS Code / IDEs
+# ============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+
+# ============================
+# Terraform
+# ============================
+# Local state and plan files
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform/crash.log
+terraform/*.tfplan
+terraform/*.backup
+
+# ============================
+# Helm
+# ============================
+# Helm release packaging
+*.tgz
+helm/*/charts/
+helm/*/tmp/
+helm/*/.helmignore
+
+# ============================
+# Azure DevOps / CI
+# ============================
+# Logs and artifacts
+*.zip
+*.tar.gz
+*.tgz
+*.bak
+*.tmp
+*.temp
+*.retry
+*.orig
+*.rej
+
+# Azure CLI / kubectl config
+.azure/
+.azuredevops/
+.kube/
+.kubectl/
+.kubeconfig
+config
+
+# ============================
+# OS generated files
+# ============================
+.DS_Store
+ehthumbs.db
+Icon?
+Thumbs.db
+desktop.ini
+
+# ============================
+# Misc
+# ============================
+*.lock
+*.pid
+*.seed
+*.pid.lock
