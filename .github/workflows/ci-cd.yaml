@@ -1,0 +1,165 @@
+name: CI/CD AKS Blue-Green
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  # These map to GitHub repository *Variables* (non-secret) you’ll set below
+  RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+  LOCATION:            ${{ vars.LOCATION }}
+  ACR_NAME:            ${{ vars.ACR_NAME }}
+  AKS_NAME:            ${{ vars.AKS_NAME }}
+  # Derived at runtime
+  IMAGE_NAME: hello-bluegreen
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # for azure/login (OIDC) if you switch to federated creds later
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install & test
+        run: |
+          cd app
+          npm ci
+          npm test
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Init/Apply (ensure infra)
+        working-directory: terraform
+        run: |
+          set -e
+          terraform init -input=false
+          terraform apply -auto-approve -input=false \
+            -var="resource_group_name=${RESOURCE_GROUP_NAME}" \
+            -var="location=${LOCATION}" \
+            -var="acr_name=${ACR_NAME}" \
+            -var="aks_name=${AKS_NAME}"
+
+      - name: Build & Push image to ACR (server-side)
+        id: acr
+        run: |
+          set -e
+          ACR_LOGIN_SERVER=$(az acr show -n "${ACR_NAME}" -g "${RESOURCE_GROUP_NAME}" --query loginServer -o tsv)
+          IMAGE_TAG="${{ github.run_number }}"
+          az acr build --registry "${ACR_NAME}" --image "${IMAGE_NAME}:${IMAGE_TAG}" .
+          echo "acr=${ACR_LOGIN_SERVER}" >> $GITHUB_OUTPUT
+          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Publish build outputs
+        run: |
+          echo "ACR: ${{ steps.acr.outputs.acr }}"
+          echo "TAG: ${{ steps.acr.outputs.tag }}"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS context (kubectl)
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP_NAME }}
+          cluster-name:   ${{ env.AKS_NAME }}
+
+      - name: Install Helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Ensure prod namespace
+        run: |
+          kubectl get ns prod >/dev/null 2>&1 || kubectl create ns prod
+
+      - name: Install NGINX Ingress
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace prod --create-namespace \
+            --set controller.service.type=LoadBalancer
+
+      - name: Decide target color
+        id: color
+        run: |
+          set -e
+          ACTIVE=$(kubectl get ingress app-router -n prod -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.name}' 2>/dev/null || echo "none")
+          echo "Active: $ACTIVE"
+          if [ "$ACTIVE" = "myapp-blue" ]; then
+            echo "target=green" >> $GITHUB_OUTPUT
+            echo "idle=myapp-green" >> $GITHUB_OUTPUT
+          else
+            echo "target=blue" >> $GITHUB_OUTPUT
+            echo "idle=myapp-blue" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy idle color
+        run: |
+          set -e
+          ACR_LOGIN_SERVER=$(az acr show -n "${ACR_NAME}" -g "${RESOURCE_GROUP_NAME}" --query loginServer -o tsv)
+          IMAGE_TAG="${{ needs.build.outputs.tag || steps.fallback.outputs.tag }}"
+          # Fallback when using 'needs':
+          if [ -z "$IMAGE_TAG" ]; then IMAGE_TAG="${{ needs.build.result && 'unused' || '0' }}"; fi
+          IMAGE_TAG="${{ github.run_number }}"
+          helm upgrade --install ${{ steps.color.outputs.idle }} ./helm/app-chart \
+            --namespace prod \
+            --set image.repository="${ACR_LOGIN_SERVER}/${IMAGE_NAME}" \
+            --set image.tag="${IMAGE_TAG}" \
+            --set env.color="${{ steps.color.outputs.target }}" \
+            --set env.version="v${IMAGE_TAG}" \
+            --wait --timeout 5m
+          kubectl rollout status deploy/${{ steps.color.outputs.idle }} -n prod --timeout=120s
+
+      - name: Flip router to new color & expose URL
+        id: flip
+        run: |
+          set -e
+          # Wait for LB IP
+          for i in {1..30}; do
+            IP=$(kubectl get svc ingress-nginx-controller -n prod -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            [ -n "$IP" ] && break
+            echo "Waiting for Ingress IP..."; sleep 10
+          done
+          [ -z "$IP" ] && (echo "No LB IP assigned" && exit 1)
+          HOST="${IP}.nip.io"
+          helm upgrade --install router ./helm/router-chart \
+            --namespace prod \
+            --set ingress.host="${HOST}" \
+            --set ingress.activeService="${{ steps.color.outputs.idle }}" \
+            --wait --timeout 3m
+          echo "url=http://${HOST}/" >> $GITHUB_OUTPUT
+
+      - name: Show public URL
+        run: echo "App is live at: ${{ steps.flip.outputs.url }}"
