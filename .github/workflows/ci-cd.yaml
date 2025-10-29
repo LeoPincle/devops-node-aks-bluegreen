@@ -13,10 +13,10 @@ on:
         default: 'default value'
 
 env:
-  RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
-  LOCATION:            ${{ vars.LOCATION }}
-  ACR_NAME:            ${{ vars.ACR_NAME }}
-  AKS_NAME:            ${{ vars.AKS_NAME }}
+  RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
+  LOCATION:            ${{ secrets.LOCATION }}
+  ACR_NAME:            ${{ secrets.ACR_NAME }}
+  AKS_NAME:            ${{ secrets.AKS_NAME }}
   IMAGE_NAME: hello-bluegreen
 
 jobs:
@@ -57,18 +57,18 @@ jobs:
           set -e
           terraform init -input=false
           terraform apply -auto-approve -input=false \
-            -var="resource_group_name=${RESOURCE_GROUP_NAME}" \
-            -var="location=${LOCATION}" \
-            -var="acr_name=${ACR_NAME}" \
-            -var="aks_name=${AKS_NAME}"
+            -var="resource_group_name=${{ env.RESOURCE_GROUP_NAME }}" \
+            -var="location=${{ env.LOCATION }}" \
+            -var="acr_name=${{ env.ACR_NAME }}" \
+            -var="aks_name=${{ env.AKS_NAME }}"
 
       - name: Build & Push image to ACR
         id: acr
         run: |
           set -e
-          ACR_LOGIN_SERVER=$(az acr show -n "${ACR_NAME}" -g "${RESOURCE_GROUP_NAME}" --query loginServer -o tsv)
+          ACR_LOGIN_SERVER=$(az acr show -n "${{ env.ACR_NAME }}" -g "${{ env.RESOURCE_GROUP_NAME }}" --query loginServer -o tsv)
           IMAGE_TAG="${{ github.run_number }}"
-          az acr build --registry "${ACR_NAME}" --image "${IMAGE_NAME}:${IMAGE_TAG}" .
+          az acr build --registry "${{ env.ACR_NAME }}" --image "${{ env.IMAGE_NAME }}:${IMAGE_TAG}" .
           echo "acr=${ACR_LOGIN_SERVER}" >> $GITHUB_ENV
           echo "tag=${IMAGE_TAG}" >> $GITHUB_ENV
 
@@ -131,11 +131,11 @@ jobs:
       - name: Deploy to idle color
         run: |
           set -e
-          ACR_LOGIN_SERVER=$(az acr show -n "${ACR_NAME}" -g "${RESOURCE_GROUP_NAME}" --query loginServer -o tsv)
+          ACR_LOGIN_SERVER=$(az acr show -n "${{ env.ACR_NAME }}" -g "${{ env.RESOURCE_GROUP_NAME }}" --query loginServer -o tsv)
           IMAGE_TAG="${{ github.run_number }}"
           helm upgrade --install ${{ env.idle }} ./helm/app-chart \
             --namespace prod \
-            --set image.repository="${ACR_LOGIN_SERVER}/${IMAGE_NAME}" \
+            --set image.repository="${ACR_LOGIN_SERVER}/${{ env.IMAGE_NAME }}" \
             --set image.tag="${IMAGE_TAG}" \
             --set env.color="${{ env.target }}" \
             --set env.version="v${IMAGE_TAG}" \
