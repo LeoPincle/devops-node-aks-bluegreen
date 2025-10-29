@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      my_input:
-        description: 'Custom input'
-        required: false
-        default: 'default value'
 
 env:
   IMAGE_NAME: hello-bluegreen
