@@ -13,11 +13,11 @@ on:
         default: 'default value'
 
 env:
+  IMAGE_NAME: hello-bluegreen
   RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
   LOCATION:            ${{ secrets.LOCATION }}
   ACR_NAME:            ${{ secrets.ACR_NAME }}
   AKS_NAME:            ${{ secrets.AKS_NAME }}
-  IMAGE_NAME: hello-bluegreen
 
 jobs:
   build:
